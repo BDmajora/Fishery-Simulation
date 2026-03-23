@@ -1,0 +1,19 @@
+cat <<EOF > .gitignore
+# Environments
+venv/
+env/
+.env
+
+# Project Results/Data
+results/
+
+# Python Bytecode and Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+EOF
