@@ -1,27 +1,30 @@
-# Survey-Based Fishery Management Simulation
+# High-Throughput Tensor-Based Fishery Management Simulation
 
-A high-performance Management Strategy Evaluation (MSE) tool designed for data-limited fisheries. This project simulates fish population dynamics and evaluates target-based management procedures to prevent stock collapse and optimize fishing effort.
+A performance-optimized Management Strategy Evaluation (MSE) framework engineered to profile and accelerate biological population dynamics through hardware-accelerated tensor mathematics. This project demonstrates a transition from legacy sequential modeling to a high-parallelism GPU execution environment using PyTorch.
 
-## Overview
+## Engineering Highlights
 
-Based on research by Sun et al. (2020), this simulation implements Target-Based Management Procedures. It compares current abundance indices against fixed target levels to dynamically adjust fishing pressure, providing a computational framework for fisheries lacking traditional stock assessment data.
+* **Tensor-Driven Dynamics:** Migrated core simulation logic from NumPy to **PyTorch**, utilizing vectorized operations to eliminate Python-level bottleneck loops and maximize arithmetic intensity.
+* **Hardware-Agnostic Acceleration:** Optimized for target hardware by implementing dynamic device allocation (`CUDA`/`CPU`), ensuring efficient memory management and minimizing PCIe overhead.
+* **Performance Profiling & Benchmarking:** Integrated a comparative analysis suite to measure **Latency (ms/step)** and **Throughput (steps/sec)**, documenting performance gains achieved via GPU-accelerated tensor contractions.
+* **Vectorized State Management:** Implemented efficient tensor slicing, broadcasting, and dimension-based reductions (`torch.sum`) to manage multi-patch state transitions without iterative overhead.
+* **Stochastic Modeling:** Applied probability theory and noise injection directly on the GPU/TPU device to maintain high-throughput execution during Monte Carlo-style simulation runs.
 
-## Features
+## Technical Competencies Demonstrated
 
-* **Population Dynamics Modeling:** Simulates fish stock abundance, recruitment, and mortality using NumPy and Pandas.
-* **Target-Based Feedback Loops:** Automated management logic that scales fishing effort based on real-time abundance deviations.
-* **Hardware-Accelerated Simulation:** Optional PyTorch GPU acceleration to scale simulations to larger datasets and complex multi-species environments.
-* **Performance Benchmarking:** Comparative analysis tools to measure execution latency and throughput differences between CPU (NumPy) and GPU (PyTorch) backends.
-* **Data Visualization:** Integrated Matplotlib suite for tracking population recovery trends and collapse probabilities.
+| Competency | Implementation Detail |
+| :--- | :--- |
+| **Tensor Math** | Leveraged broadcasting, outer products, and dimension-specific reductions to simulate complex interactions. |
+| **Performance Optimization** | Refactored $O(N)$ Python loops into $O(1)$ vectorized operations for spatial patch dynamics. |
+| **Hardware Utilization** | Profiled end-to-end performance differences between CPU (NumPy) and GPU (PyTorch) backends. |
+| **Systems Architecture** | Developed a modular, object-oriented simulation engine with clean separation of physics and management logic. |
 
 ## Dependencies
 
-This project is built with Python 3.10+ and utilizes the following libraries:
-
-* **NumPy**: Core numerical routines for population matrix manipulations and linear algebra.
-* **Pandas**: Data structures for tracking historical simulation logs and fishery metrics.
-* **Matplotlib**: Generative plotting for management strategy evaluation and trend analysis.
-* **PyTorch**: GPU-accelerated tensor operations for high-throughput simulation runs.
+* **PyTorch**: High-performance tensor operations and GPU acceleration logic.
+* **NumPy**: Base numerical routines and legacy data comparison.
+* **Pandas**: Efficient logging and structured data manipulation for simulation history.
+* **Matplotlib**: Generative plotting for analyzing population recovery trends and management efficacy.
 
 ## Installation
 
