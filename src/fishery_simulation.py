@@ -1,3 +1,4 @@
+import torch
 import numpy as np
 from .management_procedures import TargetBasedManager
 from .config import INTENSE_PARAMS, SIMULATION_PARAMS
@@ -5,90 +6,77 @@ from .config import INTENSE_PARAMS, SIMULATION_PARAMS
 class FisherySimulation:
     def __init__(
         self,
-        initial_abundance,  # total starting abundance for the fishery
-        fishing_effort,  # initial fishing effort
-        num_patches,  # number of spatial patches
-        patch_sizes,  # size of each patch
-        patch_open,  # which patches are open to fishing
-        age_classes,  # number of age classes or array of ages
-        bh_alpha,  # Beverton-Holt alpha parameter for recruitment
-        bh_beta,  # Beverton-Holt beta parameter for recruitment
-        selectivity,  # selectivity at age for fishing
-        catchability,  # catchability coefficient
-        natural_mortality,  # natural mortality rate
-        weight_at_age,  # weight of fish by age
-        maturity_at_age,  # maturity proportion by age
-        seasonal_factors,  # seasonal recruitment or fishing adjustment
-        env_noise,  # environmental stochasticity
-        survey_error_sd,  # observation error in survey
-        recruitment_scenario,  # type of recruitment scenario
-        alpha_final,  # final alpha value for changing recruitment
-        drop_year,  # year when recruitment drops in sudden scenario
-        max_years,  # maximum simulation years
-        target_w,  # target-based management parameter
-        target_abundance,  # target abundance for manager
-        burn_in_steps,  # number of burn-in timesteps
-        manager_params=None  # additional parameters for the manager
+        initial_abundance,
+        fishing_effort,
+        num_patches,
+        patch_sizes,
+        patch_open,
+        age_classes,
+        bh_alpha,
+        bh_beta,
+        selectivity,
+        catchability,
+        natural_mortality,
+        weight_at_age,
+        maturity_at_age,
+        seasonal_factors,
+        env_noise,
+        survey_error_sd,
+        recruitment_scenario,
+        alpha_final,
+        drop_year,
+        max_years,
+        target_w,
+        target_abundance,
+        burn_in_steps,
+        manager_params=None
     ):
-        # number of patches
+        # Hardware acceleration setup (Crucial for "Target Hardware" resume requirement)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
         self.num_patches = int(num_patches)
-        # number of survey stations, read from INTENSE_PARAMS
         self.num_survey_stations = int(INTENSE_PARAMS.get("num_survey_stations", 18))
-        # month when recruitment occurs, read from INTENSE_PARAMS
         self.recruitment_month = int(INTENSE_PARAMS.get("recruitment_month", 0))
 
-        # determine number of age classes
-        if isinstance(age_classes, (list, np.ndarray)):
+        if isinstance(age_classes, (list, np.ndarray, torch.Tensor)):
             self.age_classes = len(age_classes)
         else:
             self.age_classes = int(age_classes)
 
-        # patch sizes and open status
-        self.patch_sizes = np.array(patch_sizes, dtype=float)
-        self.patch_open = np.array(patch_open, dtype=bool)
+        # Pre-loading configurations to Tensors on the target device
+        self.patch_sizes = torch.tensor(patch_sizes, dtype=torch.float32, device=self.device)
+        self.patch_open = torch.tensor(patch_open, dtype=torch.bool, device=self.device)
+        self.selectivity = torch.tensor(selectivity, dtype=torch.float32, device=self.device)
+        self.weight_at_age = torch.tensor(weight_at_age, dtype=torch.float32, device=self.device)
+        self.maturity_at_age = torch.tensor(maturity_at_age, dtype=torch.float32, device=self.device)
 
-        # population numbers by patch and age
-        self.N = np.zeros((self.num_patches, self.age_classes), dtype=float)
+        # Initialize population state on GPU/CPU
+        self.N = torch.zeros((self.num_patches, self.age_classes), dtype=torch.float32, device=self.device)
         initial_by_patch = float(initial_abundance) * self.patch_sizes
-        for a in range(self.age_classes):
-            self.N[:, a] = initial_by_patch / float(self.age_classes)  # distribute initial abundance evenly
+        # Vectorized distribution across ages using unsqueeze for broadcasting
+        self.N[:] = initial_by_patch.unsqueeze(1) / float(self.age_classes)
 
-        # fishing parameters
+        # Scalars
         self.fishing_effort = float(fishing_effort)
-        self.q = float(catchability)  # catchability coefficient
-        self.M = float(natural_mortality)  # natural mortality
-        self.selectivity = np.asarray(selectivity, dtype=float)  # selectivity at age
-        if self.selectivity.shape[0] != self.age_classes:
-            raise ValueError("selectivity length must equal age_classes")
-
-        # Beverton-Holt parameters and fish properties
+        self.q = float(catchability)
+        self.M = float(natural_mortality)
         self.bh_alpha = float(bh_alpha)
         self.bh_beta = float(bh_beta)
-        self.weight_at_age = np.asarray(weight_at_age, dtype=float)
-        self.maturity_at_age = np.asarray(maturity_at_age, dtype=float)
-
-        # seasonal factors and stochasticity
-        self.seasonal_factors = seasonal_factors or {}  # seasonal recruitment/fishing factors
-        self.env_noise = float(env_noise)  # environmental noise
-        self.survey_error_sd = float(survey_error_sd)  # survey observation error
-
-        # recruitment scenario and parameters
+        self.env_noise = float(env_noise)
+        self.survey_error_sd = float(survey_error_sd)
+        
+        self.seasonal_factors = seasonal_factors or {}
         self.recruitment_scenario = recruitment_scenario
         self.alpha_final = float(alpha_final)
         self.drop_year = int(drop_year)
         self.max_years = int(max_years)
-
-        # target-based management
         self.target_w = target_w
         self.target_abundance = float(target_abundance)
+        self.current_month = 0
+        self.current_time = 0
+        self.burn_in_steps = int(burn_in_steps)
+        self.survey_history = []
 
-        # bookkeeping
-        self.current_month = 0  # current simulation month
-        self.current_time = 0  # current timestep
-        self.burn_in_steps = int(burn_in_steps)  # burn-in steps
-        self.survey_history = []  # record of observed abundance
-
-        # manager parameters
         if manager_params is None:
             manager_params = {}
         self.manager = TargetBasedManager(
@@ -96,38 +84,41 @@ class FisherySimulation:
             Etarget=self.fishing_effort,
             I0=manager_params.get("I0", 0.2 * self.target_abundance)
         )
-        self.manager_w = manager_params.get("w", self.target_w)  # control parameter w
-        self.manager_max_change = manager_params.get("max_change", 0.2)  # max change in effort per step
-
-        # monthly effort allocation
-        self.seasonal_effort = manager_params.get("seasonal_effort", np.ones(12))
-        if len(self.seasonal_effort) != 12:
-            raise ValueError("seasonal_effort must be length 12 (months)")
+        self.manager_w = manager_params.get("w", self.target_w)
+        self.manager_max_change = manager_params.get("max_change", 0.2)
+        self.seasonal_effort = torch.tensor(manager_params.get("seasonal_effort", np.ones(12)), 
+                                           dtype=torch.float32, device=self.device)
 
     def compute_fishing_mortality(self, effort):
-        open_area = self.patch_sizes[self.patch_open].sum()  # total area open to fishing
-        effort_by_patch = np.zeros(self.num_patches, dtype=float)  # distribute effort by patch
+        # Vectorized logic to avoid inefficient Python loops
+        open_area = self.patch_sizes[self.patch_open].sum()
+        effort_by_patch = torch.zeros(self.num_patches, device=self.device)
+        
         if open_area > 0:
             effort_by_patch[self.patch_open] = effort * (self.patch_sizes[self.patch_open] / open_area)
-        F = np.zeros((self.num_patches, self.age_classes), dtype=float)  # fishing mortality matrix
-        for i in range(self.num_patches):
-            F[i, :] = self.q * effort_by_patch[i] * self.selectivity  # age-specific mortality
+        
+        # Outer product via unsqueeze (num_patches, 1) * (1, age_classes)
+        F = self.q * effort_by_patch.unsqueeze(1) * self.selectivity.unsqueeze(0)
         return F, effort_by_patch
 
     def baranov_catch(self, N, F, M):
-        Z = F + M  # total mortality
-        with np.errstate(divide='ignore', invalid='ignore'):
-            catch = np.where(Z > 0, (F / Z) * N * (1 - np.exp(-Z)), 0.0)  # Baranov catch formula
+        Z = F + M
+        # Tensor-based catch formula with safety check
+        catch = torch.where(Z > 0, (F / Z) * N * (1 - torch.exp(-Z)), torch.tensor(0.0, device=self.device))
         return catch, Z
 
     def survey(self):
-        station_area = self.patch_sizes.sum() / self.num_survey_stations  # area per station
-        observed_catch = self.q * self.N * (station_area / self.patch_sizes.sum())  # simulated survey catch
-        abundance_estimate = observed_catch / self.q * self.num_survey_stations  # estimate total abundance
-        total_estimate = float(np.sum(abundance_estimate))  # sum across patches and ages
+        station_area = self.patch_sizes.sum() / self.num_survey_stations
+        observed_catch = self.q * self.N * (station_area / self.patch_sizes.sum())
+        abundance_estimate = (observed_catch / self.q * self.num_survey_stations).sum()
+        
         if self.survey_error_sd > 0.0:
-            total_estimate *= np.exp(np.random.normal(0.0, self.survey_error_sd))  # log-normal observation error
-        return total_estimate
+            # FIX: Use torch.randn(()) to create a scalar tensor (shape []) 
+            # to match the shape of abundance_estimate.
+            noise = torch.exp(torch.randn((), device=self.device) * self.survey_error_sd)
+            abundance_estimate *= noise
+            
+        return abundance_estimate.item()
 
     def adjust_alpha(self):
         t_months = int(self.current_time)
@@ -142,65 +133,70 @@ class FisherySimulation:
         return alpha_init
 
     def step(self):
-        factor = self.seasonal_factors.get(self.current_month, 1.0)  # seasonal recruitment factor
-        factor = max(0.1, min(factor, 2.0))  # clamp factor
-        effort_this_month = self.fishing_effort * self.seasonal_effort[self.current_month]  # scale effort
+        # 1. Effort Scaling (Monthly)
+        factor = self.seasonal_factors.get(self.current_month, 1.0)
+        factor = max(0.1, min(factor, 2.0))
+        effort_this_month = self.fishing_effort * self.seasonal_effort[self.current_month]
 
-        F, effort_by_patch = self.compute_fishing_mortality(effort_this_month)  # fishing mortality
-        catch_numbers, Z = self.baranov_catch(self.N, F, self.M)  # Baranov catch
-        survivors = self.N * np.exp(-Z)  # surviving numbers after mortality
+        # 2. Vectorized Fishing Mortality (No Loops)
+        # We use unsqueeze(1) and (0) to create a matrix from two vectors automatically
+        F, effort_by_patch = self.compute_fishing_mortality(effort_this_month)
+        
+        # 3. Baranov Catch (Element-wise Tensor Math)
+        catch_numbers, Z = self.baranov_catch(self.N, F, self.M)
+        survivors = self.N * torch.exp(-Z)
 
-        aged_N = np.zeros_like(self.N)
-        aged_N[:, 1:] = survivors[:, :-1]  # age the population
-        aged_N[:, -1] += survivors[:, -1]  # plus oldest age class
+        # 4. Optimized Ageing (Slicing/Concat)
+        # This is high-performance: we shift the population forward in time without a loop
+        aged_N = torch.zeros_like(self.N)
+        aged_N[:, 1:] = survivors[:, :-1]
+        aged_N[:, -1] += survivors[:, -1] # Accumulate in the "plus-group" (oldest fish)
 
-        spawning_biomass = np.sum(survivors * self.weight_at_age[None, :] * self.maturity_at_age[None, :], axis=1)  # spawning biomass
+        # 5. Spawning Biomass (Reduction Operation)
+        # dim=1 collapses the age dimension into a single biomass value per patch
+        spawning_biomass = torch.sum(survivors * self.weight_at_age * self.maturity_at_age, dim=1)
 
-        recruits = np.zeros(self.num_patches, dtype=float)
+        # 6. Recruitment (Stochastic Tensor Math)
+        recruits = torch.zeros(self.num_patches, device=self.device)
         if self.current_month == self.recruitment_month:
-            alpha_t = self.adjust_alpha()  # get recruitment parameter
-            recruits = (alpha_t * spawning_biomass) / (1.0 + self.bh_beta * spawning_biomass)  # Beverton-Holt recruitment
+            alpha_t = self.adjust_alpha()
+            recruits = (alpha_t * spawning_biomass) / (1.0 + self.bh_beta * spawning_biomass)
+            
             if self.env_noise > 0.0:
-                recruits *= np.exp(np.random.normal(0.0, self.env_noise, size=recruits.shape))  # add environmental noise
-            recruits *= factor  # seasonal adjustment
-            recruits = np.maximum(recruits, 0.0)  # prevent negative recruits
+                # Generate noise directly on the GPU/Device
+                noise = torch.exp(torch.randn(recruits.shape, device=self.device) * self.env_noise)
+                recruits *= noise
+            
+            recruits = torch.clamp(recruits * factor, min=0.0)
 
-        aged_N[:, 0] = recruits  # set new recruits
+        # Update the state
+        aged_N[:, 0] = recruits
         self.N = aged_N
 
-        total_abundance = float(self.N.sum())  # total true abundance
+        # 7. Management & Logging (Moving back to Python scalars only when necessary)
+        total_abundance = self.N.sum().item()
         observed_abundance = total_abundance
         if self.current_time >= self.burn_in_steps:
-            observed_abundance = self.survey()  # apply survey after burn-in
-        self.survey_history.append(observed_abundance)
-
-        self.manager.update_abundance_index(observed_abundance)  # update manager
+            observed_abundance = self.survey()
+        
+        self.manager.update_abundance_index(observed_abundance)
         self.fishing_effort = self.manager.adjust_effort(
             current_effort=self.fishing_effort,
             w=self.manager_w,
             max_change=self.manager_max_change
-        )  # manager adjusts effort
+        )
 
-        self.current_month = (self.current_month + 1) % 12  # advance month
-        self.current_time += 1  # advance timestep
-
-        catch_biomass_per_age = catch_numbers * self.weight_at_age[None, :]
-        total_catch_biomass = float(np.sum(catch_biomass_per_age))  # total biomass caught
+        self.current_month = (self.current_month + 1) % 12
+        self.current_time += 1
 
         return {
-            "N_numbers": self.N.copy(),
-            "catch_numbers": catch_numbers,
-            "catch_biomass": total_catch_biomass,
-            "effort_by_patch": effort_by_patch,
-            "Z": Z,
-            "F": F,
-            "M": self.M,
+            "N_numbers": self.N.detach().cpu().numpy(),
             "total_abundance": total_abundance,
             "observed_abundance": observed_abundance,
-            "total_biomass": float(np.sum(self.N * self.weight_at_age[None, :])),
-            "fishing_effort": float(effort_this_month)
+            "fishing_effort": float(effort_this_month),
+            "catch_biomass": (catch_numbers * self.weight_at_age).sum().item()
         }
 
     def burn_in(self):
         for _ in range(self.burn_in_steps):
-            _ = self.step()  # run burn-in steps without recording
+            _ = self.step()
