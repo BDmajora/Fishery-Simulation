@@ -29,7 +29,7 @@ A performance-optimized Management Strategy Evaluation (MSE) framework engineere
 ## Installation
 
 1. **Clone the repository:**
-   git clone https://github.com/your-username/fishery-simulation.git
+   git clone https://github.com/bdmajora/fishery-simulation.git
    cd fishery-simulation
 
 2. **Set up a virtual environment:**
